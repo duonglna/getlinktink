@@ -1,5 +1,5 @@
 {
-  "name": "vietnamplus-crawler-api",
+  "name": "getlinktink",
   "version": "1.0.0",
   "description": "API to crawl VietnamPlus videos with keyword filtering",
   "main": "server.js",
