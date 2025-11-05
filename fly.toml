@@ -1,5 +1,5 @@
 # fly.toml app configuration file
-app = "vietnamplus-crawler-api"
+app = "getlinktink"
 primary_region = "sin"  # Singapore region (closest to Vietnam)
 
 [build]
