@@ -1,169 +1,165 @@
-// server.js - Puppeteer Version (clicks real button)
+// server.js - Ultra Fast Version (No Puppeteer)
+// Works within 5-minute trial limit
 const express = require('express');
-const puppeteer = require('puppeteer');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Crawl with Puppeteer - actually clicks "Xem thêm" button
-async function crawlWithPuppeteer(maxClicks = 10) {
-  let browser;
+// Fast parallel crawl - completes in ~30 seconds
+async function crawlFast(maxPages = 20) {
   const results = [];
   const seen = new Set();
   
-  try {
-    console.log('\n' + '='.repeat(60));
-    console.log(`Starting Puppeteer crawl (${maxClicks} button clicks)...`);
-    console.log('='.repeat(60));
-    
-    // Launch browser
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
-    });
-    
-    const page = await browser.newPage();
-    
-    // Set viewport
-    await page.setViewport({ width: 1920, height: 1080 });
-    
-    // Go to video page
-    console.log('\nLoading https://www.vietnamplus.vn/video/...');
-    await page.goto('https://www.vietnamplus.vn/video/', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
-    
-    console.log('Page loaded successfully');
-    
-    // Function to extract URLs from current page
-    const extractUrls = async () => {
-      return await page.evaluate(() => {
-        const links = Array.from(document.querySelectorAll('a[href]'));
-        return links.map(a => ({
-          url: a.href,
-          title: a.getAttribute('title') || a.textContent.trim() || ''
-        }));
-      });
-    };
-    
-    // Extract initial URLs
-    let pageUrls = await extractUrls();
-    pageUrls.forEach(item => {
-      const lowerUrl = item.url.toLowerCase();
-      if ((lowerUrl.includes('chu-tich-nuoc') || lowerUrl.includes('luong-cuong')) && 
-          !seen.has(item.url)) {
-        seen.add(item.url);
-        results.push({
-          url: item.url,
-          title: item.title.replace(/\s+/g, ' ').trim(),
-          foundOnClick: 0
-        });
-      }
-    });
-    
-    console.log(`Initial page: Found ${results.length} filtered URLs`);
-    
-    // Click "Xem thêm" button multiple times
-    for (let click = 1; click <= maxClicks; click++) {
-      try {
-        console.log(`\nClick #${click}/${maxClicks} on "Xem thêm" button...`);
+  console.log(`\nFast crawl: ${maxPages} pages in parallel...`);
+  const start = Date.now();
+  
+  // Create all requests at once (parallel)
+  const requests = [];
+  for (let page = 1; page <= maxPages; page++) {
+    requests.push(
+      axios.get('https://www.vietnamplus.vn/api/get-zone', {
+        params: {
+          page: page,
+          zone: 438,
+          type: 'zone',
+          size: 30,
+          layout: 'media'
+        },
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
+          'Referer': 'https://www.vietnamplus.vn/video/'
+        },
+        timeout: 8000
+      }).catch(err => {
+        console.log(`Page ${page} failed: ${err.message}`);
+        return null;
+      })
+    );
+  }
+  
+  // Execute all at once
+  console.log('Fetching all pages in parallel...');
+  const responses = await Promise.all(requests);
+  
+  // Process all responses
+  responses.forEach((response, index) => {
+    if (response && response.status === 200 && response.data) {
+      const $ = cheerio.load(response.data);
+      const links = $('a[href]');
+      
+      links.each((i, elem) => {
+        let href = $(elem).attr('href');
         
-        // Wait for button to be available
-        const buttonSelector = 'button.more-news.control__loadmore';
-        await page.waitForSelector(buttonSelector, { timeout: 5000 });
-        
-        // Scroll button into view
-        await page.evaluate((selector) => {
-          const button = document.querySelector(selector);
-          if (button) {
-            button.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          }
-        }, buttonSelector);
-        
-        await page.waitForTimeout(500);
-        
-        // Click the button
-        await page.click(buttonSelector);
-        console.log('  Button clicked!');
-        
-        // Wait for new content to load
-        await page.waitForTimeout(2000);
-        
-        // Extract URLs again
-        pageUrls = await extractUrls();
-        let newUrlsCount = 0;
-        
-        pageUrls.forEach(item => {
-          const lowerUrl = item.url.toLowerCase();
-          if ((lowerUrl.includes('chu-tich-nuoc') || lowerUrl.includes('luong-cuong')) && 
-              !seen.has(item.url)) {
-            seen.add(item.url);
-            newUrlsCount++;
-            results.push({
-              url: item.url,
-              title: item.title.replace(/\s+/g, ' ').trim(),
-              foundOnClick: click
-            });
-          }
-        });
-        
-        console.log(`  ✓ Found ${newUrlsCount} new filtered URLs (total: ${results.length})`);
-        
-        // Check if button still exists (end of content)
-        const buttonExists = await page.$(buttonSelector);
-        if (!buttonExists) {
-          console.log('  Button disappeared - no more content');
-          break;
+        if (href && href.startsWith('/')) {
+          href = 'https://www.vietnamplus.vn' + href;
         }
         
-      } catch (error) {
-        console.log(`  ✗ Error on click ${click}: ${error.message}`);
-        break;
-      }
+        if (href && href.includes('vietnamplus.vn')) {
+          const lower = href.toLowerCase();
+          
+          // Flexible matching
+          const match = lower.includes('chu-tich-nuoc') || 
+                       lower.includes('chu_tich_nuoc') ||
+                       lower.includes('luong-cuong') ||
+                       lower.includes('luong_cuong') ||
+                       lower.includes('chu-tich') && lower.includes('nuoc') ||
+                       lower.includes('luong') && lower.includes('cuong');
+          
+          if (match && !seen.has(href)) {
+            seen.add(href);
+            
+            const title = $(elem).attr('title') || 
+                         $(elem).find('img').attr('alt') ||
+                         $(elem).text().trim() || '';
+            
+            results.push({
+              url: href,
+              title: title.replace(/\s+/g, ' ').trim(),
+              page: index + 1
+            });
+          }
+        }
+      });
     }
-    
-    console.log('\n' + '='.repeat(60));
-    console.log(`Crawl complete: ${results.length} URLs found`);
-    console.log('='.repeat(60) + '\n');
-    
-  } catch (error) {
-    console.error('Puppeteer error:', error.message);
-    throw error;
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
-  }
+  });
+  
+  const elapsed = ((Date.now() - start) / 1000).toFixed(2);
+  console.log(`Complete in ${elapsed}s: ${results.length} URLs\n`);
   
   return results;
 }
 
-// API Routes
+// Alternative: Direct page scraping (even faster)
+async function scrapeDirect() {
+  console.log('\nDirect scraping from main page...');
+  
+  try {
+    const response = await axios.get('https://www.vietnamplus.vn/video/', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      timeout: 10000
+    });
+    
+    const $ = cheerio.load(response.data);
+    const results = [];
+    const seen = new Set();
+    
+    $('a[href]').each((i, elem) => {
+      let href = $(elem).attr('href');
+      
+      if (href && href.startsWith('/')) {
+        href = 'https://www.vietnamplus.vn' + href;
+      }
+      
+      if (href) {
+        const lower = href.toLowerCase();
+        const match = lower.includes('chu-tich-nuoc') || 
+                     lower.includes('luong-cuong') ||
+                     lower.includes('chu-tich') && lower.includes('nuoc');
+        
+        if (match && !seen.has(href)) {
+          seen.add(href);
+          results.push({
+            url: href,
+            title: $(elem).attr('title') || $(elem).text().trim() || '',
+            source: 'direct'
+          });
+        }
+      }
+    });
+    
+    console.log(`Direct scraping: ${results.length} URLs\n`);
+    return results;
+    
+  } catch (error) {
+    console.log('Direct scraping failed:', error.message);
+    return [];
+  }
+}
+
+// Routes
 
 app.get('/', (req, res) => {
   res.json({
-    name: 'VietnamPlus Video Crawler API (Puppeteer)',
-    version: '2.0.0',
-    description: 'Actually clicks "Xem thêm" button using Puppeteer',
-    method: 'Headless browser automation',
+    name: 'VietnamPlus Crawler - Ultra Fast',
+    version: '4.0.0',
+    note: 'Optimized for Fly.io 5-minute trial limit',
+    speed: '~30 seconds for 20 pages',
     endpoints: {
       health: 'GET /health',
-      crawl: 'GET /api/crawl?clicks=10'
+      crawl: 'GET /api/crawl?pages=20 (parallel, fast)',
+      quick: 'GET /api/quick (direct scrape, 5 seconds)',
+      both: 'GET /api/both (combined for maximum results)'
     },
     filters: ['chu-tich-nuoc', 'luong-cuong'],
-    note: 'Uses Puppeteer to click real button and wait for content',
-    usage: {
-      example: 'curl https://getlinktink.fly.dev/api/crawl?clicks=10',
-      maxClicks: 20
-    }
+    trialInfo: 'Works within 5-minute Fly.io trial limit'
   });
 });
 
@@ -171,66 +167,120 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     timestamp: new Date().toISOString(),
-    method: 'puppeteer'
+    method: 'fast-api',
+    trialSafe: true
   });
 });
 
+// Fast parallel crawl
 app.get('/api/crawl', async (req, res) => {
   try {
-    const clicks = parseInt(req.query.clicks) || 10;
+    const pages = parseInt(req.query.pages) || 20;
     
-    if (clicks < 1 || clicks > 20) {
+    if (pages < 1 || pages > 50) {
       return res.status(400).json({
-        success: false,
-        error: 'Clicks must be between 1 and 20'
+        error: 'pages must be 1-50'
       });
     }
     
-    console.log(`\nAPI Request: ${clicks} button clicks`);
-    
-    const startTime = Date.now();
-    const results = await crawlWithPuppeteer(clicks);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+    const start = Date.now();
+    const results = await crawlFast(pages);
+    const time = ((Date.now() - start) / 1000).toFixed(2);
     
     res.json({
       success: true,
-      timestamp: new Date().toISOString(),
-      crawlTime: `${elapsed}s`,
-      buttonClicks: clicks,
+      method: 'parallel-api',
+      crawlTime: `${time}s`,
+      pages: pages,
       totalUrls: results.length,
       filters: ['chu-tich-nuoc', 'luong-cuong'],
-      method: 'puppeteer',
+      trialSafe: true,
       data: results
     });
     
   } catch (error) {
-    console.error('API Error:', error);
     res.status(500).json({
       success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
+      error: error.message
     });
   }
 });
 
-// Start server
+// Quick direct scrape
+app.get('/api/quick', async (req, res) => {
+  try {
+    const start = Date.now();
+    const results = await scrapeDirect();
+    const time = ((Date.now() - start) / 1000).toFixed(2);
+    
+    res.json({
+      success: true,
+      method: 'direct-scrape',
+      crawlTime: `${time}s`,
+      totalUrls: results.length,
+      note: results.length === 0 ? 'Try /api/crawl instead' : 'Fast but limited results',
+      data: results
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Both methods combined
+app.get('/api/both', async (req, res) => {
+  try {
+    const start = Date.now();
+    
+    // Run both in parallel
+    const [directResults, apiResults] = await Promise.all([
+      scrapeDirect(),
+      crawlFast(15)
+    ]);
+    
+    // Combine and deduplicate
+    const seen = new Set();
+    const combined = [];
+    
+    [...directResults, ...apiResults].forEach(item => {
+      if (!seen.has(item.url)) {
+        seen.add(item.url);
+        combined.push(item);
+      }
+    });
+    
+    const time = ((Date.now() - start) / 1000).toFixed(2);
+    
+    res.json({
+      success: true,
+      method: 'combined',
+      crawlTime: `${time}s`,
+      totalUrls: combined.length,
+      filters: ['chu-tich-nuoc', 'luong-cuong'],
+      trialSafe: true,
+      data: combined
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(60));
-  console.log('🚀 VietnamPlus Crawler API (Puppeteer)');
+  console.log('🚀 VietnamPlus Crawler - ULTRA FAST');
   console.log('='.repeat(60));
-  console.log(`📍 Server: http://0.0.0.0:${PORT}`);
-  console.log(`📍 Crawl:  http://localhost:${PORT}/api/crawl?clicks=10`);
+  console.log(`Server: http://0.0.0.0:${PORT}`);
+  console.log(`\nEndpoints:`);
+  console.log(`  /api/crawl?pages=20  - Fast parallel (~30s)`);
+  console.log(`  /api/quick           - Direct scrape (~5s)`);
+  console.log(`  /api/both            - Combined (~30s)`);
   console.log('='.repeat(60));
-  console.log('\n✨ Method: Puppeteer (clicks real button)');
-  console.log('✨ Filters: chu-tich-nuoc OR luong-cuong\n');
-});
-
-process.on('SIGTERM', () => {
-  console.log('\nShutting down...');
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('\nShutting down...');
-  process.exit(0);
+  console.log('\n✅ Trial-safe: Completes in under 5 minutes\n');
 });
