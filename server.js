@@ -1,179 +1,205 @@
-// server.js - VietnamPlus Video Crawler API
-// Single file - no dependencies needed except: npm install express axios cheerio
-
+// server.js - Puppeteer Version (clicks real button)
 const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Main crawl function
-async function crawlVietnamPlus(maxPages = 10) {
+// Crawl with Puppeteer - actually clicks "Xem thêm" button
+async function crawlWithPuppeteer(maxClicks = 10) {
+  let browser;
   const results = [];
   const seen = new Set();
   
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`Starting crawl for ${maxPages} pages...`);
-  console.log(`Filters: chu-tich-nuoc OR luong-cuong`);
-  console.log('='.repeat(60));
-  
-  for (let page = 1; page <= maxPages; page++) {
-    try {
-      console.log(`\nPage ${page}/${maxPages}...`);
-      
-      // API call matching button attributes
-      const response = await axios.get('https://www.vietnamplus.vn/api/get-zone', {
-        params: {
-          page: page,        // data-page (increments)
-          zone: 438,         // data-zone="438"
-          type: 'zone',      // data-type="zone"
-          size: 30,          // data-size="30"
-          layout: 'media'    // data-layout="media"
-        },
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
-          'Referer': 'https://www.vietnamplus.vn/video/'
-        },
-        timeout: 10000
+  try {
+    console.log('\n' + '='.repeat(60));
+    console.log(`Starting Puppeteer crawl (${maxClicks} button clicks)...`);
+    console.log('='.repeat(60));
+    
+    // Launch browser
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    
+    const page = await browser.newPage();
+    
+    // Set viewport
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    // Go to video page
+    console.log('\nLoading https://www.vietnamplus.vn/video/...');
+    await page.goto('https://www.vietnamplus.vn/video/', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+    
+    console.log('Page loaded successfully');
+    
+    // Function to extract URLs from current page
+    const extractUrls = async () => {
+      return await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a[href]'));
+        return links.map(a => ({
+          url: a.href,
+          title: a.getAttribute('title') || a.textContent.trim() || ''
+        }));
       });
-
-      if (response.status === 200 && response.data) {
-        const $ = cheerio.load(response.data);
-        const links = $('a[href]');
+    };
+    
+    // Extract initial URLs
+    let pageUrls = await extractUrls();
+    pageUrls.forEach(item => {
+      const lowerUrl = item.url.toLowerCase();
+      if ((lowerUrl.includes('chu-tich-nuoc') || lowerUrl.includes('luong-cuong')) && 
+          !seen.has(item.url)) {
+        seen.add(item.url);
+        results.push({
+          url: item.url,
+          title: item.title.replace(/\s+/g, ' ').trim(),
+          foundOnClick: 0
+        });
+      }
+    });
+    
+    console.log(`Initial page: Found ${results.length} filtered URLs`);
+    
+    // Click "Xem thêm" button multiple times
+    for (let click = 1; click <= maxClicks; click++) {
+      try {
+        console.log(`\nClick #${click}/${maxClicks} on "Xem thêm" button...`);
         
-        // Stop if no content
-        if (links.length === 0) {
-          console.log('No more content. Stopping.');
-          break;
-        }
+        // Wait for button to be available
+        const buttonSelector = 'button.more-news.control__loadmore';
+        await page.waitForSelector(buttonSelector, { timeout: 5000 });
         
-        let foundOnPage = 0;
-        
-        links.each((i, elem) => {
-          let href = $(elem).attr('href');
-          
-          // Make absolute URL
-          if (href && href.startsWith('/')) {
-            href = 'https://www.vietnamplus.vn' + href;
+        // Scroll button into view
+        await page.evaluate((selector) => {
+          const button = document.querySelector(selector);
+          if (button) {
+            button.scrollIntoView({ block: 'center', behavior: 'smooth' });
           }
-          
-          // Filter: contains "chu-tich-nuoc" OR "luong-cuong"
-          if (href && href.includes('vietnamplus.vn')) {
-            const lowerHref = href.toLowerCase();
-            if (lowerHref.includes('chu-tich-nuoc') || lowerHref.includes('luong-cuong')) {
-              
-              // Only add unique URLs
-              if (!seen.has(href)) {
-                seen.add(href);
-                foundOnPage++;
-                
-                // Extract title
-                const title = $(elem).attr('title') || 
-                             $(elem).find('img').attr('alt') ||
-                             $(elem).text().trim() || '';
-                
-                results.push({
-                  url: href,
-                  title: title.replace(/\s+/g, ' ').trim(),
-                  page: page
-                });
-              }
-            }
+        }, buttonSelector);
+        
+        await page.waitForTimeout(500);
+        
+        // Click the button
+        await page.click(buttonSelector);
+        console.log('  Button clicked!');
+        
+        // Wait for new content to load
+        await page.waitForTimeout(2000);
+        
+        // Extract URLs again
+        pageUrls = await extractUrls();
+        let newUrlsCount = 0;
+        
+        pageUrls.forEach(item => {
+          const lowerUrl = item.url.toLowerCase();
+          if ((lowerUrl.includes('chu-tich-nuoc') || lowerUrl.includes('luong-cuong')) && 
+              !seen.has(item.url)) {
+            seen.add(item.url);
+            newUrlsCount++;
+            results.push({
+              url: item.url,
+              title: item.title.replace(/\s+/g, ' ').trim(),
+              foundOnClick: click
+            });
           }
         });
         
-        console.log(`  ✓ Found ${foundOnPage} new URLs (total: ${results.length})`);
+        console.log(`  ✓ Found ${newUrlsCount} new filtered URLs (total: ${results.length})`);
         
-        // Respectful delay between requests
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Check if button still exists (end of content)
+        const buttonExists = await page.$(buttonSelector);
+        if (!buttonExists) {
+          console.log('  Button disappeared - no more content');
+          break;
+        }
         
-      } else {
-        console.log(`  ✗ No data (status: ${response.status})`);
+      } catch (error) {
+        console.log(`  ✗ Error on click ${click}: ${error.message}`);
         break;
       }
-      
-    } catch (error) {
-      console.error(`  ✗ Error: ${error.message}`);
-      break;
+    }
+    
+    console.log('\n' + '='.repeat(60));
+    console.log(`Crawl complete: ${results.length} URLs found`);
+    console.log('='.repeat(60) + '\n');
+    
+  } catch (error) {
+    console.error('Puppeteer error:', error.message);
+    throw error;
+  } finally {
+    if (browser) {
+      await browser.close();
     }
   }
-  
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`Crawl complete: ${results.length} URLs found`);
-  console.log('='.repeat(60) + '\n');
   
   return results;
 }
 
 // API Routes
 
-// Root - API info
 app.get('/', (req, res) => {
   res.json({
-    name: 'VietnamPlus Video Crawler API',
-    version: '1.0.0',
-    description: 'Crawl VietnamPlus videos with pagination filtering',
+    name: 'VietnamPlus Video Crawler API (Puppeteer)',
+    version: '2.0.0',
+    description: 'Actually clicks "Xem thêm" button using Puppeteer',
+    method: 'Headless browser automation',
     endpoints: {
       health: 'GET /health',
-      crawl: 'GET /api/crawl?pages=10',
-      urls: 'GET /api/urls?pages=10 (simple URL list)'
-    },
-    pagination: {
-      button: 'Xem thêm (Load More)',
-      parameters: {
-        'data-page': 'Increments from 1 to N',
-        'data-zone': '438',
-        'data-type': 'zone',
-        'data-size': '30',
-        'data-layout': 'media'
-      }
+      crawl: 'GET /api/crawl?clicks=10'
     },
     filters: ['chu-tich-nuoc', 'luong-cuong'],
+    note: 'Uses Puppeteer to click real button and wait for content',
     usage: {
-      example: 'curl http://localhost:3000/api/crawl?pages=10',
-      maxPages: 50
+      example: 'curl https://getlinktink.fly.dev/api/crawl?clicks=10',
+      maxClicks: 20
     }
   });
 });
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    method: 'puppeteer'
   });
 });
 
-// Main crawl endpoint - full details
 app.get('/api/crawl', async (req, res) => {
   try {
-    const pages = parseInt(req.query.pages) || 10;
+    const clicks = parseInt(req.query.clicks) || 10;
     
-    if (pages < 1 || pages > 50) {
+    if (clicks < 1 || clicks > 20) {
       return res.status(400).json({
         success: false,
-        error: 'Pages must be between 1 and 50'
+        error: 'Clicks must be between 1 and 20'
       });
     }
     
-    console.log(`\nAPI Request: Crawl ${pages} pages`);
+    console.log(`\nAPI Request: ${clicks} button clicks`);
     
     const startTime = Date.now();
-    const results = await crawlVietnamPlus(pages);
+    const results = await crawlWithPuppeteer(clicks);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
     
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
       crawlTime: `${elapsed}s`,
+      buttonClicks: clicks,
       totalUrls: results.length,
       filters: ['chu-tich-nuoc', 'luong-cuong'],
+      method: 'puppeteer',
       data: results
     });
     
@@ -187,57 +213,24 @@ app.get('/api/crawl', async (req, res) => {
   }
 });
 
-// Simple URLs endpoint - just array of URLs
-app.get('/api/urls', async (req, res) => {
-  try {
-    const pages = parseInt(req.query.pages) || 10;
-    
-    if (pages < 1 || pages > 50) {
-      return res.status(400).json({
-        success: false,
-        error: 'Pages must be between 1 and 50'
-      });
-    }
-    
-    const results = await crawlVietnamPlus(pages);
-    const urls = results.map(item => item.url);
-    
-    res.json({
-      success: true,
-      total: urls.length,
-      urls: urls
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(60));
-  console.log('🚀 VietnamPlus Video Crawler API');
+  console.log('🚀 VietnamPlus Crawler API (Puppeteer)');
   console.log('='.repeat(60));
-  console.log(`📍 Server running on: http://localhost:${PORT}`);
-  console.log(`📍 API Info:         http://localhost:${PORT}/`);
-  console.log(`📍 Health Check:     http://localhost:${PORT}/health`);
-  console.log(`📍 Crawl Endpoint:   http://localhost:${PORT}/api/crawl?pages=10`);
-  console.log(`📍 URLs Endpoint:    http://localhost:${PORT}/api/urls?pages=10`);
+  console.log(`📍 Server: http://0.0.0.0:${PORT}`);
+  console.log(`📍 Crawl:  http://localhost:${PORT}/api/crawl?clicks=10`);
   console.log('='.repeat(60));
-  console.log('\n✨ Filters: chu-tich-nuoc OR luong-cuong');
-  console.log('✨ Max pages: 50\n');
+  console.log('\n✨ Method: Puppeteer (clicks real button)');
+  console.log('✨ Filters: chu-tich-nuoc OR luong-cuong\n');
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('\n👋 Shutting down gracefully...');
+  console.log('\nShutting down...');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('\n👋 Shutting down gracefully...');
+  console.log('\nShutting down...');
   process.exit(0);
 });
