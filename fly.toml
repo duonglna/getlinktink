@@ -1,5 +1,6 @@
 # fly.toml app configuration file
 app = "getlinktink"
+primary_region = "sin"  # Singapore region (closest to Vietnam)
 
 [build]
 
